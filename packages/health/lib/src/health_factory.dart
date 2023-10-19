@@ -14,8 +14,17 @@ class HealthFactory {
   static const MethodChannel _channel = MethodChannel('flutter_health');
   String? _deviceId;
   final _deviceInfo = DeviceInfoPlugin();
+  late bool _useHealthConnectIfAvailable;
 
   static PlatformType _platformType = Platform.isAndroid ? PlatformType.ANDROID : PlatformType.IOS;
+
+  /// The plugin was created to use Health Connect (if true) or Google Fit (if false).
+  bool get useHealthConnectIfAvailable => _useHealthConnectIfAvailable;
+
+  HealthFactory({bool useHealthConnectIfAvailable = false}) {
+    _useHealthConnectIfAvailable = useHealthConnectIfAvailable;
+    _channel.invokeMethod('useHealthConnectIfAvailable', {'use': _useHealthConnectIfAvailable});
+  }
 
   /// Check if a given data type is available on the platform
   bool isDataTypeAvailable(HealthDataType dataType) => _platformType == PlatformType.ANDROID
@@ -45,7 +54,7 @@ class HealthFactory {
   ///   with a READ or READ_WRITE access.
   ///
   ///   On Android, this function returns true or false, depending on whether the specified access right has been granted.
-  static Future<bool?> hasPermissions(List<HealthDataType> types, {List<HealthDataAccess>? permissions}) async {
+  Future<bool?> hasPermissions(List<HealthDataType> types, {List<HealthDataAccess>? permissions}) async {
     if (permissions != null && permissions.length != types.length)
       throw ArgumentError("The lists of types and permissions must be of same length.");
 
@@ -63,11 +72,21 @@ class HealthFactory {
     });
   }
 
-  /// Revoke permissions obtained earlier.
+  /// Revokes permissions of all types.
+  /// Uses `disableFit()` on Google Fit.
   ///
-  /// Not supported on iOS and method does nothing.
-  static Future<void> revokePermissions() async {
-    return await _channel.invokeMethod('revokePermissions');
+  /// Not implemented on iOS as there is no way to programmatically remove access.
+  Future<void> revokePermissions() async {
+    try {
+      if (_platformType == PlatformType.IOS) {
+        throw UnsupportedError(
+            'Revoke permissions is not supported on iOS. Please revoke permissions manually in the settings.');
+      }
+      await _channel.invokeMethod('revokePermissions');
+      return;
+    } catch (e) {
+      print(e);
+    }
   }
 
   /// Requests permissions to access data types in Apple Health or Google Fit.
@@ -99,8 +118,14 @@ class HealthFactory {
       for (int i = 0; i < types.length; i++) {
         final type = types[i];
         final permission = permissions[i];
-        if (type == HealthDataType.ELECTROCARDIOGRAM && permission != HealthDataAccess.READ) {
-          throw ArgumentError('Requesting WRITE permission on ELECTROCARDIOGRAM is not allowed.');
+        if ((type == HealthDataType.ELECTROCARDIOGRAM ||
+                type == HealthDataType.HIGH_HEART_RATE_EVENT ||
+                type == HealthDataType.LOW_HEART_RATE_EVENT ||
+                type == HealthDataType.IRREGULAR_HEART_RATE_EVENT ||
+                type == HealthDataType.WALKING_HEART_RATE) &&
+            permission != HealthDataAccess.READ) {
+          throw ArgumentError(
+              'Requesting WRITE permission on ELECTROCARDIOGRAM / HIGH_HEART_RATE_EVENT / LOW_HEART_RATE_EVENT / IRREGULAR_HEART_RATE_EVENT / WALKING_HEART_RATE is not allowed.');
         }
       }
     }
@@ -128,6 +153,22 @@ class HealthFactory {
       throw ArgumentError('The length of [types] must be same as that of [permissions].');
     }
 
+    if (permissions != null) {
+      for (int i = 0; i < types.length; i++) {
+        final type = types[i];
+        final permission = permissions[i];
+        if ((type == HealthDataType.ELECTROCARDIOGRAM ||
+                type == HealthDataType.HIGH_HEART_RATE_EVENT ||
+                type == HealthDataType.LOW_HEART_RATE_EVENT ||
+                type == HealthDataType.IRREGULAR_HEART_RATE_EVENT ||
+                type == HealthDataType.WALKING_HEART_RATE) &&
+            permission != HealthDataAccess.READ) {
+          throw ArgumentError(
+              'Requesting WRITE permission on ELECTROCARDIOGRAM / HIGH_HEART_RATE_EVENT / LOW_HEART_RATE_EVENT / IRREGULAR_HEART_RATE_EVENT / WALKING_HEART_RATE is not allowed.');
+        }
+      }
+    }
+
     final mTypes = List<HealthDataType>.from(types, growable: true);
     final mPermissions = permissions == null
         ? List<int>.filled(types.length, HealthDataAccess.READ.index, growable: true)
@@ -142,6 +183,7 @@ class HealthFactory {
     return isAuthorized ?? false;
   }
 
+  /// Obtains health and weight if BMI is requested on Android.
   static void _handleBMI(List<HealthDataType> mTypes, List<int> mPermissions) {
     final index = mTypes.indexOf(HealthDataType.BODY_MASS_INDEX);
 
@@ -197,6 +239,7 @@ class HealthFactory {
   /// * [endTime] - the end time when this [value] is measured.
   ///   + It must be equal to or later than [startTime].
   ///   + Simply set [endTime] equal to [startTime] if the [value] is measured only at a specific point in time.
+  /// * [unit] - <mark>(iOS ONLY)</mark> the unit the health data is measured in.
   ///
   /// Values for Sleep and Headache are ignored and will be automatically assigned the coresponding value.
   Future<bool> writeHealthData(
@@ -210,11 +253,13 @@ class HealthFactory {
       throw ArgumentError("Adding workouts should be done using the writeWorkoutData method.");
     if (startTime.isAfter(endTime)) throw ArgumentError("startTime must be equal or earlier than endTime");
     if ({
-      HealthDataType.HIGH_HEART_RATE_EVENT,
-      HealthDataType.LOW_HEART_RATE_EVENT,
-      HealthDataType.IRREGULAR_HEART_RATE_EVENT,
-      HealthDataType.ELECTROCARDIOGRAM,
-    }.contains(type)) throw ArgumentError("$type - iOS doesnt support writing this data type in HealthKit");
+          HealthDataType.HIGH_HEART_RATE_EVENT,
+          HealthDataType.LOW_HEART_RATE_EVENT,
+          HealthDataType.IRREGULAR_HEART_RATE_EVENT,
+          HealthDataType.ELECTROCARDIOGRAM,
+        }.contains(type) &&
+        _platformType == PlatformType.IOS)
+      throw ArgumentError("$type - iOS doesnt support writing this data type in HealthKit");
 
     // Assign default unit if not specified
     unit ??= _dataTypeToUnit[type]!;
@@ -240,108 +285,6 @@ class HealthFactory {
       'endTime': endTime.millisecondsSinceEpoch
     };
     bool? success = await _channel.invokeMethod('writeData', args);
-    return success ?? false;
-  }
-
-  /// Deletes all records of the given type for a given period of time
-  ///
-  /// Returns true if successful, false otherwise.
-  ///
-  /// Parameters:
-  /// * [type] - the value's HealthDataType
-  /// * [startTime] - the start time when this [value] is measured.
-  ///   + It must be equal to or earlier than [endTime].
-  /// * [endTime] - the end time when this [value] is measured.
-  ///   + It must be equal to or later than [startTime].
-  Future<bool> delete(HealthDataType type, DateTime startTime, DateTime endTime) async {
-    if (startTime.isAfter(endTime)) throw ArgumentError("startTime must be equal or earlier than endTime");
-
-    Map<String, dynamic> args = {
-      'dataTypeKey': type.name,
-      'startTime': startTime.millisecondsSinceEpoch,
-      'endTime': endTime.millisecondsSinceEpoch
-    };
-    bool? success = await _channel.invokeMethod('delete', args);
-    return success ?? false;
-  }
-
-  /// Saves blood pressure record into Apple Health or Google Fit.
-  ///
-  /// Returns true if successful, false otherwise.
-  ///
-  /// Parameters:
-  /// * [systolic] - the systolic part of the blood pressure
-  /// * [diastolic] - the diastolic part of the blood pressure
-  /// * [startTime] - the start time when this [value] is measured.
-  ///   + It must be equal to or earlier than [endTime].
-  /// * [endTime] - the end time when this [value] is measured.
-  ///   + It must be equal to or later than [startTime].
-  ///   + Simply set [endTime] equal to [startTime] if the blood pressure is measured only at a specific point in time.
-  Future<bool> writeBloodPressure(int systolic, int diastolic, DateTime startTime, DateTime endTime) async {
-    if (startTime.isAfter(endTime)) throw ArgumentError("startTime must be equal or earlier than endTime");
-
-    Map<String, dynamic> args = {
-      'systolic': systolic,
-      'diastolic': diastolic,
-      'startTime': startTime.millisecondsSinceEpoch,
-      'endTime': endTime.millisecondsSinceEpoch
-    };
-    bool? success = await _channel.invokeMethod('writeBloodPressure', args);
-    return success ?? false;
-  }
-
-  /// Saves audiogram into Apple Health.
-  ///
-  /// Returns true if successful, false otherwise.
-  ///
-  /// Parameters:
-  /// * [frequencies] - array of frequencies of the test
-  /// * [leftEarSensitivities] threshold in decibel for the left ear
-  /// * [rightEarSensitivities] threshold in decibel for the left ear
-  /// * [startTime] - the start time when the audiogram is measured.
-  ///   + It must be equal to or earlier than [endTime].
-  /// * [endTime] - the end time when the audiogram is measured.
-  ///   + It must be equal to or later than [startTime].
-  ///   + Simply set [endTime] equal to [startTime] if the audiogram is measured only at a specific point in time.
-  /// * [metadata] - optional map of keys, both HKMetadataKeyExternalUUID and HKMetadataKeyDeviceName are required
-  Future<bool> writeAudiogram(List<double> frequencies, List<double> leftEarSensitivities,
-      List<double> rightEarSensitivities, DateTime startTime, DateTime endTime,
-      {Map<String, dynamic>? metadata}) async {
-    if (frequencies.isEmpty || leftEarSensitivities.isEmpty || rightEarSensitivities.isEmpty)
-      throw ArgumentError("frequencies, leftEarSensitivities and rightEarSensitivities can't be empty");
-    if (frequencies.length != leftEarSensitivities.length ||
-        rightEarSensitivities.length != leftEarSensitivities.length)
-      throw ArgumentError("frequencies, leftEarSensitivities and rightEarSensitivities need to be of the same length");
-    if (startTime.isAfter(endTime)) throw ArgumentError("startTime must be equal or earlier than endTime");
-    if (_platformType == PlatformType.ANDROID) throw UnsupportedError("writeAudiogram is not supported on Android");
-    Map<String, dynamic> args = {
-      'frequencies': frequencies,
-      'leftEarSensitivities': leftEarSensitivities,
-      'rightEarSensitivities': rightEarSensitivities,
-      'dataTypeKey': HealthDataType.AUDIOGRAM.name,
-      'startTime': startTime.millisecondsSinceEpoch,
-      'endTime': endTime.millisecondsSinceEpoch,
-      'metadata': metadata,
-    };
-    bool? success = await _channel.invokeMethod('writeAudiogram', args);
-    return success ?? false;
-  }
-
-  /// Deletes Nutrition Data between [startTime] and [endTime]
-  ///
-  /// Returns true if successful, false otherwise.
-  ///
-  /// Parameters:
-  /// * [startTime] - the start time of the data to be deleted
-  /// * [endTime] - the end time of the data to be deleted
-  Future<bool> deleteNutritionData({
-    required DateTime startTime,
-    required DateTime endTime,
-  }) async {
-    bool? success = await _channel.invokeMethod('deleteNutritionData', {
-      'startTime': startTime.millisecondsSinceEpoch,
-      'endTime': endTime.millisecondsSinceEpoch,
-    });
     return success ?? false;
   }
 
@@ -441,6 +384,145 @@ class HealthFactory {
     return success ?? false;
   }
 
+  /// Deletes all records of the given type for a given period of time
+  ///
+  /// Returns true if successful, false otherwise.
+  ///
+  /// Parameters:
+  /// * [type] - the value's HealthDataType
+  /// * [startTime] - the start time when this [value] is measured.
+  ///   + It must be equal to or earlier than [endTime].
+  /// * [endTime] - the end time when this [value] is measured.
+  ///   + It must be equal to or later than [startTime].
+  Future<bool> delete(HealthDataType type, DateTime startTime, DateTime endTime) async {
+    if (startTime.isAfter(endTime)) throw ArgumentError("startTime must be equal or earlier than endTime");
+
+    Map<String, dynamic> args = {
+      'dataTypeKey': type.name,
+      'startTime': startTime.millisecondsSinceEpoch,
+      'endTime': endTime.millisecondsSinceEpoch
+    };
+    bool? success = await _channel.invokeMethod('delete', args);
+    return success ?? false;
+  }
+
+  /// Deletes Nutrition Data between [startTime] and [endTime]
+  ///
+  /// Returns true if successful, false otherwise.
+  ///
+  /// Parameters:
+  /// * [startTime] - the start time of the data to be deleted
+  /// * [endTime] - the end time of the data to be deleted
+  Future<bool> deleteNutritionData({
+    required DateTime startTime,
+    required DateTime endTime,
+  }) async {
+    if (startTime.isAfter(endTime)) throw ArgumentError("startTime must be equal or earlier than endTime");
+
+    bool? success = await _channel.invokeMethod(
+      'deleteNutritionData',
+      {
+        'startTime': startTime.millisecondsSinceEpoch,
+        'endTime': endTime.millisecondsSinceEpoch,
+      },
+    );
+    return success ?? false;
+  }
+
+  /// Saves blood pressure record into Apple Health or Google Fit.
+  ///
+  /// Returns true if successful, false otherwise.
+  ///
+  /// Parameters:
+  /// * [systolic] - the systolic part of the blood pressure
+  /// * [diastolic] - the diastolic part of the blood pressure
+  /// * [startTime] - the start time when this [value] is measured.
+  ///   + It must be equal to or earlier than [endTime].
+  /// * [endTime] - the end time when this [value] is measured.
+  ///   + It must be equal to or later than [startTime].
+  ///   + Simply set [endTime] equal to [startTime] if the blood pressure is measured only at a specific point in time.
+  Future<bool> writeBloodPressure(int systolic, int diastolic, DateTime startTime, DateTime endTime) async {
+    if (startTime.isAfter(endTime)) throw ArgumentError("startTime must be equal or earlier than endTime");
+
+    Map<String, dynamic> args = {
+      'systolic': systolic,
+      'diastolic': diastolic,
+      'startTime': startTime.millisecondsSinceEpoch,
+      'endTime': endTime.millisecondsSinceEpoch
+    };
+    bool? success = await _channel.invokeMethod('writeBloodPressure', args);
+    return success ?? false;
+  }
+
+  /// Saves blood oxygen saturation record into Apple Health or Google Fit/Health Connect.
+  ///
+  /// Returns true if successful, false otherwise.
+  ///
+  /// Parameters:
+  /// * [saturation] - the saturation of the blood oxygen in percentage
+  /// * [flowRate] - optional supplemental oxygen flow rate, only supported on Google Fit (default 0.0)
+  /// * [startTime] - the start time when this [value] is measured.
+  ///   + It must be equal to or earlier than [endTime].
+  /// * [endTime] - the end time when this [value] is measured.
+  ///   + It must be equal to or later than [startTime].
+  ///   + Simply set [endTime] equal to [startTime] if the blood oxygen saturation is measured only at a specific point in time.
+  Future<bool> writeBloodOxygen(double saturation, DateTime startTime, DateTime endTime,
+      {double flowRate = 0.0}) async {
+    if (startTime.isAfter(endTime)) throw ArgumentError("startTime must be equal or earlier than endTime");
+    bool? success;
+
+    if (_platformType == PlatformType.IOS) {
+      success = await writeHealthData(saturation, HealthDataType.BLOOD_OXYGEN, startTime, endTime);
+    } else if (_platformType == PlatformType.ANDROID) {
+      Map<String, dynamic> args = {
+        'value': saturation,
+        'flowRate': flowRate,
+        'startTime': startTime.millisecondsSinceEpoch,
+        'endTime': endTime.millisecondsSinceEpoch,
+        'dataTypeKey': HealthDataType.BLOOD_OXYGEN.name,
+      };
+      success = await _channel.invokeMethod('writeBloodOxygen', args);
+    }
+    return success ?? false;
+  }
+
+  /// Saves audiogram into Apple Health.
+  ///
+  /// Returns true if successful, false otherwise.
+  ///
+  /// Parameters:
+  /// * [frequencies] - array of frequencies of the test
+  /// * [leftEarSensitivities] threshold in decibel for the left ear
+  /// * [rightEarSensitivities] threshold in decibel for the left ear
+  /// * [startTime] - the start time when the audiogram is measured.
+  ///   + It must be equal to or earlier than [endTime].
+  /// * [endTime] - the end time when the audiogram is measured.
+  ///   + It must be equal to or later than [startTime].
+  ///   + Simply set [endTime] equal to [startTime] if the audiogram is measured only at a specific point in time.
+  /// * [metadata] - optional map of keys, both HKMetadataKeyExternalUUID and HKMetadataKeyDeviceName are required
+  Future<bool> writeAudiogram(List<double> frequencies, List<double> leftEarSensitivities,
+      List<double> rightEarSensitivities, DateTime startTime, DateTime endTime,
+      {Map<String, dynamic>? metadata}) async {
+    if (frequencies.isEmpty || leftEarSensitivities.isEmpty || rightEarSensitivities.isEmpty)
+      throw ArgumentError("frequencies, leftEarSensitivities and rightEarSensitivities can't be empty");
+    if (frequencies.length != leftEarSensitivities.length ||
+        rightEarSensitivities.length != leftEarSensitivities.length)
+      throw ArgumentError("frequencies, leftEarSensitivities and rightEarSensitivities need to be of the same length");
+    if (startTime.isAfter(endTime)) throw ArgumentError("startTime must be equal or earlier than endTime");
+    if (_platformType == PlatformType.ANDROID) throw UnsupportedError("writeAudiogram is not supported on Android");
+    Map<String, dynamic> args = {
+      'frequencies': frequencies,
+      'leftEarSensitivities': leftEarSensitivities,
+      'rightEarSensitivities': rightEarSensitivities,
+      'dataTypeKey': HealthDataType.AUDIOGRAM.name,
+      'startTime': startTime.millisecondsSinceEpoch,
+      'endTime': endTime.millisecondsSinceEpoch,
+      'metadata': metadata,
+    };
+    bool? success = await _channel.invokeMethod('writeAudiogram', args);
+    return success ?? false;
+  }
+
   /// Fetch a list of health data points based on [types].
   Future<List<HealthDataPoint>> getHealthDataFromTypes(
       DateTime startTime, DateTime endTime, List<HealthDataType> types) async {
@@ -478,7 +560,7 @@ class HealthFactory {
     return await _dataQuery(startTime, endTime, dataType);
   }
 
-  /// The main function for fetching health data
+  /// Fetches data points from Android/iOS native code.
   Future<List<HealthDataPoint>> _dataQuery(DateTime startTime, DateTime endTime, HealthDataType dataType) async {
     final args = <String, dynamic>{
       'dataTypeKey': dataType.name,
@@ -487,6 +569,7 @@ class HealthFactory {
       'endTime': endTime.millisecondsSinceEpoch
     };
     final fetchedDataPoints = await _channel.invokeMethod('getData', args);
+
     if (fetchedDataPoints != null) {
       final mesg = <String, dynamic>{
         "dataType": dataType,
@@ -505,6 +588,7 @@ class HealthFactory {
     }
   }
 
+  /// Parses the fetched data points into a list of [HealthDataPoint].
   static List<HealthDataPoint> _parse(Map<String, dynamic> message) {
     final dataType = message["dataType"];
     final dataPoints = message["dataPoints"];
@@ -567,6 +651,7 @@ class HealthFactory {
     return stepsCount;
   }
 
+  /// Assigns numbers to specific [HealthDataType]s.
   int _alignValue(HealthDataType type) {
     switch (type) {
       case HealthDataType.SLEEP_IN_BED:
@@ -575,6 +660,10 @@ class HealthFactory {
         return 1;
       case HealthDataType.SLEEP_AWAKE:
         return 2;
+      case HealthDataType.SLEEP_DEEP:
+        return 3;
+      case HealthDataType.SLEEP_REM:
+        return 4;
       case HealthDataType.HEADACHE_UNSPECIFIED:
         return 0;
       case HealthDataType.HEADACHE_NOT_PRESENT:
