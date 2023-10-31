@@ -1613,6 +1613,8 @@ class HealthPlugin(private var channel: MethodChannel? = null) :
             "writeNutritionData" -> writeNutritionData(call, result)
             "deleteNutritionData" -> deleteNutritionData(call,result)
             "forceRequestAuthorization" -> forceRequestAuthorization(call,result)
+            "isHealthConnectAvailable" -> isHealthConnectAvailable(call, result)
+            "isGoogleFitAvailable" -> isGoogleFitAvailable(call, result)
             else -> result.notImplemented()
         }
     }
@@ -1649,6 +1651,23 @@ class HealthPlugin(private var channel: MethodChannel? = null) :
     fun checkAvailability() {
         healthConnectStatus = HealthConnectClient.getSdkStatus(context!!)
         healthConnectAvailable = healthConnectStatus == HealthConnectClient.SDK_AVAILABLE
+
+
+    }
+
+    fun isHealthConnectAvailable(call: MethodCall, result: Result) {
+        result.success(healthConnectAvailable)
+    }
+
+    fun isGoogleFitAvailable(call: MethodCall, result: Result) {
+        try {
+            context!!.packageManager.getPackageInfo("com.google.android.apps.fitness", PackageManager.GET_ACTIVITIES)
+            result.success(true)
+
+        } catch (e: Exception) {
+            result.success(false)
+
+        }
     }
 
     fun useHealthConnectIfAvailable(call: MethodCall, result: Result) {

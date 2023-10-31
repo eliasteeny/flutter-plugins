@@ -72,6 +72,28 @@ class HealthFactory {
     });
   }
 
+  /// Check if health connect on Android is available
+  /// Always returns true on iOS
+  Future<bool> isHealthConnectAvailable() async {
+    /// On Android, if BMI is requested, then also ask for weight and height
+    if (_platformType == PlatformType.IOS) {
+      return true;
+    }
+
+    return await _channel.invokeMethod('isHealthConnectAvailable') ?? false;
+  }
+
+  /// Check if Google Fit on Android is available
+  /// Always returns true on iOS
+  Future<bool> isGoogleFitAvailable() async {
+    /// On Android, if BMI is requested, then also ask for weight and height
+    if (_platformType == PlatformType.IOS) {
+      return true;
+    }
+
+    return await _channel.invokeMethod('isGoogleFitAvailable') ?? false;
+  }
+
   /// Revokes permissions of all types.
   /// Uses `disableFit()` on Google Fit.
   ///
