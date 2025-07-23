@@ -43,7 +43,6 @@ import io.flutter.plugin.common.MethodChannel
 import io.flutter.plugin.common.MethodChannel.MethodCallHandler
 import io.flutter.plugin.common.MethodChannel.Result
 import io.flutter.plugin.common.PluginRegistry.ActivityResultListener
-import io.flutter.plugin.common.PluginRegistry.Registrar
 import kotlinx.coroutines.*
 import java.time.*
 import java.time.temporal.ChronoUnit
@@ -59,12 +58,13 @@ const val MMOLL_2_MGDL = 18.0 // 1 mmoll= 18 mgdl
 // The minimum android level that can use Health Connect
 const val MIN_SUPPORTED_SDK = Build.VERSION_CODES.O_MR1
 
-class HealthPlugin(private var channel: MethodChannel? = null) :
+class HealthPlugin :
     MethodCallHandler,
     ActivityResultListener,
     Result,
     ActivityAware,
     FlutterPlugin {
+    private lateinit var channel: MethodChannel
     private var mResult: Result? = null
     private var handler: Handler? = null
     private var activity: Activity? = null
@@ -347,10 +347,10 @@ class HealthPlugin(private var channel: MethodChannel? = null) :
         // "OTHER" to ExerciseSessionRecord.EXERCISE_TYPE_OTHER,
     )
 
-    override fun onAttachedToEngine(@NonNull flutterPluginBinding: FlutterPlugin.FlutterPluginBinding) {
+    override fun onAttachedToEngine(flutterPluginBinding: FlutterPlugin.FlutterPluginBinding) {
         scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
         channel = MethodChannel(flutterPluginBinding.binaryMessenger, CHANNEL_NAME)
-        channel?.setMethodCallHandler(this)
+        channel.setMethodCallHandler(this)
         context = flutterPluginBinding.applicationContext
         threadPoolExecutor = Executors.newFixedThreadPool(4)
         checkAvailability()
@@ -361,7 +361,7 @@ class HealthPlugin(private var channel: MethodChannel? = null) :
     }
 
     override fun onDetachedFromEngine(binding: FlutterPlugin.FlutterPluginBinding) {
-        channel = null
+        channel.setMethodCallHandler(null)
         activity = null
         threadPoolExecutor!!.shutdown()
         threadPoolExecutor = null
@@ -376,16 +376,6 @@ class HealthPlugin(private var channel: MethodChannel? = null) :
     // them functionally equivalent. Only one of onAttachedToEngine or registerWith will be called
     // depending on the user's project. onAttachedToEngine or registerWith must both be defined
     // in the same class.
-    companion object {
-        @Suppress("unused")
-        @JvmStatic
-        fun registerWith(registrar: Registrar) {
-            val channel = MethodChannel(registrar.messenger(), CHANNEL_NAME)
-            val plugin = HealthPlugin(channel)
-            registrar.addActivityResultListener(plugin)
-            channel.setMethodCallHandler(plugin)
-        }
-    }
 
     override fun success(p0: Any?) {
         handler?.post { mResult?.success(p0) }
@@ -1636,9 +1626,7 @@ class HealthPlugin(private var channel: MethodChannel? = null) :
     }
 
     override fun onAttachedToActivity(binding: ActivityPluginBinding) {
-        if (channel == null) {
-            return
-        }
+
         binding.addActivityResultListener(this)
         activity = binding.activity
 
@@ -1660,9 +1648,7 @@ class HealthPlugin(private var channel: MethodChannel? = null) :
     }
 
     override fun onDetachedFromActivity() {
-        if (channel == null) {
-            return
-        }
+
         activity = null
         healthConnectRequestPermissionsLauncher = null;
     }
